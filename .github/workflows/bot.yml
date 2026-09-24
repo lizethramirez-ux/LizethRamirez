@@ -1,20 +1,28 @@
 name: Rushbet Bot 24/7
 on:
   schedule:
-    - cron: '0 */6 * * *' # Se ejecuta cada 6 horas automáticamente
-  workflow_dispatch: # Permite encenderlo con un botón cuando tú quieras
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Instalar Node y Playwright
+      - uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependencias del proyecto y Playwright
         run: |
-          npm install playwright
-          npx playwright install chromium
+          npm install playwright @supabase/supabase-js
+          npx playwright install --with-deps chromium
+
       - name: Reconstruir archivo de sesión
-        run: echo "${{ secrets.AUTH_JSON_BASE64 }}" | base64 -d > auth.json
+        run: echo "${{ secrets.AUTH_JSON_BASE64 }}" | base64 -di > auth.json
+
       - name: Ejecutar Bot
         run: node bot_cloud.js
         env:
