@@ -15,13 +15,13 @@ jobs:
         with:
           node-version: 20
 
-      - name: Instalar dependencias del proyecto y Playwright
+      - name: Instalar dependencias
         run: |
           npm install playwright @supabase/supabase-js
           npx playwright install --with-deps chromium
 
       - name: Reconstruir archivo de sesión
-        run: echo "${{ secrets.AUTH_JSON_BASE64 }}" | base64 -di > auth.json
+        run: echo "${{ secrets.AUTH_JSON_BASE64 }}" | tr -d '\r\n ' | base64 -di > auth.json
 
       - name: Ejecutar Bot
         run: node bot_cloud.js
