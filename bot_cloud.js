@@ -1,29 +1,26 @@
 const { chromium } = require('playwright');
-const fs = require('fs');
 
 // ==========================================
-// 1. RECONSTRUCCIÓN Y SANITIZACIÓN DE SESIÓN
+// 1. OBTENER Y VALIDAR LA SESIÓN EN MEMORIA
 // ==========================================
+const base64Data = process.env.AUTH_JSON_BASE64;
+
+if (!base64Data || base64Data.trim() === '') {
+  console.error("❌ ERROR: El secreto AUTH_JSON_BASE64 está vacío o no existe en GitHub Secrets.");
+  process.exit(1);
+}
+
+let sessionState;
 try {
-  const base64Data = process.env.AUTH_JSON_BASE64;
+  // Limpia cualquier espacio en blanco o salto de línea
+  const cleanB64 = base64Data.replace(/\s+/g, '');
+  const jsonString = Buffer.from(cleanB64, 'base64').toString('utf-8');
   
-  if (!base64Data) {
-    throw new Error("La variable AUTH_JSON_BASE64 no está definida en los Secrets.");
-  }
-
-  // Limpia saltos de línea (\n, \r) y espacios introducidos por GitHub Secrets
-  const cleanBase64 = base64Data.replace(/\s+/g, '');
-  
-  // Decodifica a texto UTF-8
-  const jsonString = Buffer.from(cleanBase64, 'base64').toString('utf-8');
-  
-  // Valida que sea un JSON válido antes de guardarlo
-  JSON.parse(jsonString);
-  
-  fs.writeFileSync('auth.json', jsonString);
-  console.log("✅ Archivo auth.json reconstruido y validado exitosamente.");
+  sessionState = JSON.parse(jsonString);
+  console.log(`✅ Sesión cargada con éxito. Total de cookies detectadas: ${sessionState.cookies ? sessionState.cookies.length : 0}`);
 } catch (err) {
-  console.error("❌ Error crítico en auth.json:", err.message);
+  console.error("❌ ERROR al procesar AUTH_JSON_BASE64: La cadena no es un Base64 o JSON válido.");
+  console.error("Detalle:", err.message);
   process.exit(1);
 }
 
@@ -31,7 +28,7 @@ try {
 // 2. EJECUCIÓN DEL BOT
 // ==========================================
 (async () => {
-  console.log("🚀 Iniciando Obrero de GitHub Actions...");
+  console.log("🚀 Iniciando Playwright en GitHub Actions...");
   
   const browser = await chromium.launch({ 
     headless: true,
@@ -42,8 +39,9 @@ try {
     ]
   });
   
+  // Inyectamos la sesión DIRECTO desde la memoria (sin usar archivos del disco)
   const context = await browser.newContext({ 
-    storageState: 'auth.json',
+    storageState: sessionState,
     viewport: { width: 1280, height: 720 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
@@ -62,8 +60,7 @@ try {
 
     let ultimaCuota = "";
     const startTime = Date.now();
-    // 5.5 horas de ejecución
-    const duration = 5.5 * 60 * 60 * 1000; 
+    const duration = 5.5 * 60 * 60 * 1000; // 5.5 horas de ejecución
 
     while (Date.now() - startTime < duration) {
       const frames = page.frames();
@@ -90,7 +87,6 @@ try {
           });
         }
       }
-      // Espera 3 segundos antes de la siguiente lectura
       await new Promise(r => setTimeout(r, 3000));
     }
 
