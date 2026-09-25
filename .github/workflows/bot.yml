@@ -20,11 +20,10 @@ jobs:
           npm install playwright @supabase/supabase-js
           npx playwright install --with-deps chromium
 
-      - name: Reconstruir archivo de sesión
-        run: echo "${{ secrets.AUTH_JSON_BASE64 }}" | tr -d '\r\n ' | base64 -di > auth.json
-
       - name: Ejecutar Bot
         run: node bot_cloud.js
         env:
+          # Pasamos la llave directamente aquí sin decodificarla en la terminal
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
