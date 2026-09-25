@@ -2,20 +2,29 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 
 // ==========================================
-// 1. RECONSTRUCCIÓN AUTOMÁTICA DE SESIÓN
+// 1. RECONSTRUCCIÓN Y SANITIZACIÓN DE SESIÓN
 // ==========================================
 try {
-    const base64Data = process.env.AUTH_JSON_BASE64;
-    if (base64Data) {
-        // Node.js decodifica Base64 de forma mucho más robusta que la terminal
-        const buffer = Buffer.from(base64Data, 'base64');
-        fs.writeFileSync('auth.json', buffer);
-        console.log("✅ Archivo auth.json reconstruido exitosamente.");
-    } else {
-        console.error("❌ No se encontró la sesión en AUTH_JSON_BASE64.");
-    }
+  const base64Data = process.env.AUTH_JSON_BASE64;
+  
+  if (!base64Data) {
+    throw new Error("La variable AUTH_JSON_BASE64 no está definida en los Secrets.");
+  }
+
+  // Limpia saltos de línea (\n, \r) y espacios introducidos por GitHub Secrets
+  const cleanBase64 = base64Data.replace(/\s+/g, '');
+  
+  // Decodifica a texto UTF-8
+  const jsonString = Buffer.from(cleanBase64, 'base64').toString('utf-8');
+  
+  // Valida que sea un JSON válido antes de guardarlo
+  JSON.parse(jsonString);
+  
+  fs.writeFileSync('auth.json', jsonString);
+  console.log("✅ Archivo auth.json reconstruido y validado exitosamente.");
 } catch (err) {
-    console.error("❌ Error decodificando la sesión:", err.message);
+  console.error("❌ Error crítico en auth.json:", err.message);
+  process.exit(1);
 }
 
 // ==========================================
@@ -23,9 +32,16 @@ try {
 // ==========================================
 (async () => {
   console.log("🚀 Iniciando Obrero de GitHub Actions...");
-  const browser = await chromium.launch({ headless: true });
   
-  // Cargamos el contexto con el archivo que acabamos de crear
+  const browser = await chromium.launch({ 
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  });
+  
   const context = await browser.newContext({ 
     storageState: 'auth.json',
     viewport: { width: 1280, height: 720 },
@@ -46,10 +62,12 @@ try {
 
     let ultimaCuota = "";
     const startTime = Date.now();
+    // 5.5 horas de ejecución
     const duration = 5.5 * 60 * 60 * 1000; 
 
     while (Date.now() - startTime < duration) {
       const frames = page.frames();
+      
       for (const frame of frames) {
         const cuota = await frame.evaluate(() => {
           const el = document.querySelector('.payout');
@@ -65,17 +83,20 @@ try {
             headers: {
               'apikey': process.env.SUPABASE_KEY,
               'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-              'Content-Type': 'application/json'
+              'Content-Type': 'application/json',
+              'Prefer': 'return=minimal'
             },
             body: JSON.stringify({ cuota: parseFloat(cuota) })
           });
         }
       }
-      await new Promise(r => setTimeout(r, 5000));
+      // Espera 3 segundos antes de la siguiente lectura
+      await new Promise(r => setTimeout(r, 3000));
     }
+
     await browser.close();
   } catch (e) {
-    console.log("❌ Error:", e.message);
+    console.error("❌ Error en ejecución:", e.message);
     process.exit(1);
   }
 })();
