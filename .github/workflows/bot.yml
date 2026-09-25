@@ -18,20 +18,20 @@ jobs:
         with:
           node-version: 20
 
-      - name: Instalar Playwright y dependencias
+      - name: Instalar Playwright, Stealth y dependencias
         run: |
-          npm install playwright @supabase/supabase-js
+          npm install playwright playwright-extra puppeteer-extra-plugin-stealth @supabase/supabase-js
           npx playwright install --with-deps chromium
 
-      - name: Ejecutar Bot
+      - name: Ejecutar Bot con Auto-Login
         env:
-          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+          RUSHBET_USER: ${{ secrets.RUSHBET_USER }}
+          RUSHBET_PASSWORD: ${{ secrets.RUSHBET_PASSWORD }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node bot_cloud.js
 
-      # ✅ NUEVO: Esto guardará una foto si el bot falla
-      - name: Guardar Captura de Pantalla en caso de error
+      - name: Guardar Captura en caso de error
         if: failure()
         uses: actions/upload-artifact@v4
         with:
