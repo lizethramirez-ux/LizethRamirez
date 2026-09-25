@@ -6,7 +6,7 @@ const USER = process.env.RUSHBET_USER;
 const PASS = process.env.RUSHBET_PASSWORD;
 
 (async () => {
-  console.log("🚀 Iniciando Bot (Versión Llave Maestra)...");
+  console.log("🚀 Iniciando Bot (Modo Verificación de Login)...");
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ 
     viewport: { width: 1920, height: 1080 },
@@ -18,86 +18,77 @@ const PASS = process.env.RUSHBET_PASSWORD;
 
   try {
     console.log("📡 Navegando a Rushbet...");
-    await page.goto('https://www.rushbet.co/', { waitUntil: 'networkidle', timeout: 60000 });
-    
-    // 1. LIMPIEZA TOTAL DE BANNERS (Esto es vital)
-    await page.evaluate(() => {
-      document.querySelectorAll('[id*="onetrust"], .modal-backdrop, .cookie-banner').forEach(el => el.remove());
-    });
-    await page.waitForTimeout(3000);
+    await page.goto('https://www.rushbet.co/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(5000);
 
-    // 2. FORZAR APERTURA DEL APARTADO DE LOGIN
-    console.log("🖱️ Intentando abrir apartado de login...");
-    
-    // Intentamos por Clic de Playwright
-    const loginBtn = page.locator('.sc-ACYlI, [data-test="login-button"], button:has-text("Ingresar")').first();
-    await loginBtn.click({ force: true }).catch(() => console.log("⚠️ Clic normal falló, intentando por JS..."));
+    // 1. ABRIR APARTADO (Usando tu selector sc-ACYlI)
+    console.log("🖱️ Abriendo apartado de login...");
+    await page.click('.sc-ACYlI.dZjKjM', { force: true });
+    await page.waitForTimeout(4000);
 
-    // Intentamos por Inyección de JavaScript (Este casi nunca falla)
-    await page.evaluate(() => {
-      const btn = document.querySelector('.sc-ACYlI') || document.querySelector('[data-test="login-button"]');
-      if (btn) btn.click();
-    });
-
-    // 3. ESPERAR A QUE APAREZCA EL APARTADO
-    console.log("⏳ Esperando a que los cuadros de texto aparezcan...");
-    try {
-      await page.waitForSelector('#login-form-modal-email', { state: 'visible', timeout: 15000 });
-    } catch (e) {
-      console.log("⚠️ El apartado no abrió. Intentando forzar URL de login...");
-      await page.goto('https://www.rushbet.co/?login=true', { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('#login-form-modal-email', { state: 'visible', timeout: 15000 });
-    }
-
-    // 4. DIGITAR DATOS (Modo Humano)
-    console.log("✍️ Escribiendo usuario y clave...");
-    await page.fill('#login-form-modal-email', USER, { force: true });
+    // 2. ESCRIBIR USUARIO
+    console.log("✍️ Escribiendo datos letra por letra...");
+    await page.click('#login-form-modal-email');
+    await page.keyboard.type(USER, { delay: 120 });
     await page.waitForTimeout(500);
-    await page.fill('#login-form-modal-password', PASS, { force: true });
-    
-    // 5. CLIC EN EL SEGUNDO BOTÓN DE ENTRAR (EL QUE ENVÍA LOS DATOS)
-    console.log("🚀 Pulsando el segundo botón: ENTRAR (#login-form-modal-submit)...");
+
+    // 3. ESCRIBIR CONTRASEÑA
+    await page.click('#login-form-modal-password');
+    await page.keyboard.type(PASS, { delay: 120 });
+    await page.waitForTimeout(1000);
+
+    // 4. CLIC EN EL BOTÓN "ENTRAR" (ID de tu consola)
+    console.log("🚀 Presionando ENTRAR...");
     await page.click('#login-form-modal-submit', { force: true });
 
-    // 6. NAVEGAR AL JUEGO
-    console.log("⏳ Procesando entrada al casino...");
-    await page.waitForTimeout(15000);
-    await page.goto('https://www.rushbet.co/?page=all-games&game=2440001', { waitUntil: 'networkidle' });
-    
-    // Cierre de anuncio si aparece
+    // 5. VERIFICACIÓN: Esperar a que el cuadro de login DESAPAREZCA
+    console.log("⏳ Verificando si el login fue exitoso...");
     try {
-      await page.locator('svg rect').first().click({ timeout: 5000 }).catch(() => {});
-    } catch(e) {}
+        // Esperamos que el modal se oculte. Si no se oculta, es que el login falló.
+        await page.waitForSelector('#login-form-modal-email', { state: 'hidden', timeout: 15000 });
+        console.log("✅ Login completado con éxito.");
+    } catch (e) {
+        console.log("⚠️ El login parece no haber respondido, intentando un clic extra...");
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(10000);
+    }
 
-    // 7. DETECCIÓN DEL JUEGO
-    await page.waitForTimeout(10000);
+    // 6. IR AL JUEGO
+    console.log("🎰 Navegando al juego Aviator...");
+    await page.goto('https://www.rushbet.co/?page=all-games&game=2440001', { waitUntil: 'networkidle' });
+    await page.waitForTimeout(15000);
+
+    // 7. EXTRACCIÓN (Tu código de frames)
     const frames = page.frames();
     const aviatorFrame = frames.find(f => f.url().includes('spribe'));
 
     if (aviatorFrame) {
-        console.log("🎯 ¡BOT CONECTADO AL AVIATOR!");
-        let ultimaCuota = "";
-        while (true) {
-            const cuota = await aviatorFrame.evaluate(() => {
-                const el = document.querySelector('.payouts-block .bubble-multiplier, .payout');
-                return el ? el.innerText.replace('x','').trim() : null;
-            });
-            if (cuota && cuota !== ultimaCuota) {
-                ultimaCuota = cuota;
-                console.log(`📈 CUOTA: ${cuota}x`);
-                // Envío a Supabase...
-                if (process.env.SUPABASE_URL) {
-                  await fetch(`${process.env.SUPABASE_URL}/rest/v1/cuotas_rushbet`, {
-                    method: 'POST',
-                    headers: { 'apikey': process.env.SUPABASE_KEY, 'Authorization': `Bearer ${process.env.SUPABASE_KEY}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cuota: parseFloat(cuota) })
-                  }).catch(() => {});
-                }
-            }
-            await page.waitForTimeout(3000);
+      console.log("🎯 ¡BOT CONECTADO AL JUEGO!");
+      let ultimaCuota = "";
+      const startTime = Date.now();
+      while (Date.now() - startTime < 19800000) {
+        const cuota = await aviatorFrame.evaluate(() => {
+          const el = document.querySelector('.payouts-block .bubble-multiplier, .payout');
+          return el ? el.innerText.replace('x','').trim() : null;
+        });
+        if (cuota && cuota !== ultimaCuota) {
+          ultimaCuota = cuota;
+          console.log(`📈 CUOTA: ${cuota}x`);
+          // Fetch a Supabase...
+          if (process.env.SUPABASE_URL) {
+            await fetch(`${process.env.SUPABASE_URL}/rest/v1/cuotas_rushbet`, {
+              method: 'POST',
+              headers: { 'apikey': process.env.SUPABASE_KEY, 'Authorization': `Bearer ${process.env.SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cuota: parseFloat(cuota) })
+            }).catch(() => {});
+          }
         }
+        await page.waitForTimeout(3000);
+      }
     } else {
-        throw new Error("No se pudo detectar el motor del juego.");
+        // Si llegamos aquí y no hay frame, tomamos otra foto para ver por qué
+        await page.screenshot({ path: 'error.png', fullPage: true });
+        throw new Error("El juego no cargó. ¿Login rechazado?");
     }
 
   } catch (e) {
