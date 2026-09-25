@@ -1,34 +1,33 @@
 const { chromium } = require('playwright');
 
 // ==========================================
-// 1. OBTENER Y VALIDAR LA SESIÓN EN MEMORIA
+// 1. CARGAR SESIÓN DESDE MEMORIA (SIN ARCHIVOS)
 // ==========================================
 const base64Data = process.env.AUTH_JSON_BASE64;
 
-if (!base64Data || base64Data.trim() === '') {
-  console.error("❌ ERROR: El secreto AUTH_JSON_BASE64 está vacío o no existe en GitHub Secrets.");
+if (!base64Data) {
+  console.error("❌ ERROR: La variable AUTH_JSON_BASE64 no existe en GitHub Secrets.");
   process.exit(1);
 }
 
 let sessionState;
 try {
-  // Limpia cualquier espacio en blanco o salto de línea
+  // Limpiar saltos de línea y espacios invisibles
   const cleanB64 = base64Data.replace(/\s+/g, '');
+  // Decodificar Base64 a JSON
   const jsonString = Buffer.from(cleanB64, 'base64').toString('utf-8');
-  
   sessionState = JSON.parse(jsonString);
-  console.log(`✅ Sesión cargada con éxito. Total de cookies detectadas: ${sessionState.cookies ? sessionState.cookies.length : 0}`);
+  console.log(`✅ Sesión cargada con éxito. Cookies detectadas: ${sessionState.cookies ? sessionState.cookies.length : 0}`);
 } catch (err) {
-  console.error("❌ ERROR al procesar AUTH_JSON_BASE64: La cadena no es un Base64 o JSON válido.");
-  console.error("Detalle:", err.message);
+  console.error("❌ ERROR al procesar el Base64 de la sesión:", err.message);
   process.exit(1);
 }
 
 // ==========================================
-// 2. EJECUCIÓN DEL BOT
+// 2. EJECUCIÓN DE PLAYWRIGHT
 // ==========================================
 (async () => {
-  console.log("🚀 Iniciando Playwright en GitHub Actions...");
+  console.log("🚀 Iniciando Navegador en GitHub Actions...");
   
   const browser = await chromium.launch({ 
     headless: true,
@@ -39,7 +38,7 @@ try {
     ]
   });
   
-  // Inyectamos la sesión DIRECTO desde la memoria (sin usar archivos del disco)
+  // Inyección directa de la sesión
   const context = await browser.newContext({ 
     storageState: sessionState,
     viewport: { width: 1280, height: 720 },
@@ -55,12 +54,12 @@ try {
       timeout: 60000 
     });
 
-    console.log("⏳ Esperando carga total...");
+    console.log("⏳ Esperando carga total del juego...");
     await page.waitForTimeout(30000);
 
     let ultimaCuota = "";
     const startTime = Date.now();
-    const duration = 5.5 * 60 * 60 * 1000; // 5.5 horas de ejecución
+    const duration = 5.5 * 60 * 60 * 1000; // 5.5 Horas
 
     while (Date.now() - startTime < duration) {
       const frames = page.frames();
@@ -92,7 +91,7 @@ try {
 
     await browser.close();
   } catch (e) {
-    console.error("❌ Error en ejecución:", e.message);
+    console.error("❌ Error durante la ejecución:", e.message);
     process.exit(1);
   }
 })();
