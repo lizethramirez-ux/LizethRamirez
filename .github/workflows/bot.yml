@@ -29,3 +29,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node bot_cloud.js
+
+      # ✅ NUEVO: Esto guardará una foto si el bot falla
+      - name: Guardar Captura de Pantalla en caso de error
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captura-error
+          path: error.png
