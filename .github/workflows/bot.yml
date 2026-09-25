@@ -2,7 +2,6 @@ name: Rushbet Bot 24/7
 
 on:
   schedule:
-    # Se ejecuta cada 6 horas automáticamente
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
@@ -19,9 +18,9 @@ jobs:
         with:
           node-version: 20
 
-      - name: Instalar Playwright y Chromium
+      - name: Instalar Playwright y dependencias
         run: |
-          npm install playwright
+          npm install playwright @supabase/supabase-js
           npx playwright install --with-deps chromium
 
       - name: Ejecutar Bot
