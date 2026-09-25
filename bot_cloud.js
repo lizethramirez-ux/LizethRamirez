@@ -1,11 +1,11 @@
 const { chromium } = require('playwright');
 
 // ==========================================
-// 1. CARGA INTELIGENTE DE SESIÓN
+// 1. CARGA DE SESIÓN
 // ==========================================
 const rawSecret = process.env.AUTH_JSON_BASE64;
 if (!rawSecret) {
-  console.error("❌ ERROR: La variable AUTH_JSON_BASE64 no existe en Secrets.");
+  console.error("❌ ERROR: AUTH_JSON_BASE64 no configurado.");
   process.exit(1);
 }
 
@@ -20,12 +20,12 @@ try {
   }
   console.log(`✅ Sesión cargada exitosamente. Total cookies: ${sessionState.cookies ? sessionState.cookies.length : 0}`);
 } catch (err) {
-  console.error("❌ ERROR crítico procesando sesión:", err.message);
+  console.error("❌ ERROR procesando sesión:", err.message);
   process.exit(1);
 }
 
 // ==========================================
-// 2. EJECUCIÓN DEL BOT CON ANTI-BLOQUEO
+// 2. EJECUCIÓN DE PLAYWRIGHT Y BÚSQUEDA DE IFRAME
 // ==========================================
 (async () => {
   console.log("🚀 Iniciando Navegador en GitHub Actions...");
@@ -36,7 +36,6 @@ try {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
-      '--disable-web-security',
       '--lang=es-CO,es'
     ]
   });
@@ -44,65 +43,62 @@ try {
   const context = await browser.newContext({ 
     storageState: sessionState,
     viewport: { width: 1366, height: 768 },
-    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     locale: 'es-CO',
     timezoneId: 'America/Bogota'
-  });
-
-  // Ocultar que es un navegador automatizado
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
 
   const page = await context.newPage();
 
   try {
     console.log("📡 Navegando a Rushbet Aviator...");
-    const response = await page.goto('https://www.rushbet.co/?page=all-games&game=2440001', { 
-      waitUntil: 'domcontentloaded', 
+    await page.goto('https://www.rushbet.co/?page=all-games&game=2440001', { 
+      waitUntil: 'networkidle', 
       timeout: 60000 
     });
 
-    console.log(`ℹ️ Estado HTTP de respuesta: ${response ? response.status() : 'Sin respuesta'}`);
-    const pageTitle = await page.title();
-    console.log(`ℹ️ Título de la página: "${pageTitle}"`);
+    console.log(`📍 URL Actual cargada: ${page.url()}`);
 
-    const content = await page.content();
+    // Esperar explícitamente a que aparezca al menos un iframe en el DOM
+    console.log("⏳ Esperando a que el iframe del juego aparezca...");
+    
+    let iframeElement = null;
+    try {
+      iframeElement = await page.waitForSelector('iframe', { timeout: 30000 });
+    } catch (e) {
+      console.warn("⚠️ No se encontró selector 'iframe' en los primeros 30s. Intentando recargar...");
+    }
 
-    // Verificación de bloqueos comunes
-    if (content.includes("Cloudflare") || content.includes("Attention Required") || content.includes("Access Denied")) {
-      console.error("❌ BLOQUEO DETECTADO: Rushbet / Cloudflare bloqueó la IP de GitHub Actions.");
+    // Re-escaneo de frames
+    await page.waitForTimeout(10000);
+    const frames = page.frames();
+    console.log(`🔍 Total de frames (iframes) detectados: ${frames.length}`);
+
+    if (frames.length <= 1) {
+      console.error("❌ EL JUEGO NO CARGÓ: Rushbet no abrió la ventana del juego Aviator.");
+      console.error("💡 Causa probable: Las cookies expiraron o Rushbet requiere inicio de sesión fresco.");
+      
+      // Tomar captura del estado actual para ver qué pantalla cargó Rushbet
+      const pageTitle = await page.title();
+      console.log(`ℹ️ Título de la página final: "${pageTitle}"`);
       process.exit(1);
     }
 
-    console.log("⏳ Esperando 25 segundos a que cargue el juego Spribe...");
-    await page.waitForTimeout(25000);
-
-    const initialFrames = page.frames();
-    console.log(`🔍 Total de frames (iframes) detectados: ${initialFrames.length}`);
+    console.log("✅ Frame del juego detectado. Iniciando escaneo de cuotas...");
 
     let ultimaCuota = "";
     const startTime = Date.now();
     const duration = 5.5 * 60 * 60 * 1000; // 5.5 Horas
-
-    console.log("🔄 Iniciando ciclo de escaneo de cuotas...");
 
     while (Date.now() - startTime < duration) {
       const currentFrames = page.frames();
       
       for (const frame of currentFrames) {
         try {
-          // Evaluar múltiples selectores posibles dentro del iframe de Spribe Aviator
           const cuota = await frame.evaluate(() => {
-            // Selector 1: .payout
-            let el = document.querySelector('.payout');
-            if (el && el.innerText) return el.innerText.replace('x','').trim();
-
-            // Selector 2: Elemento de historial superior de Spribe (.bubble-multiplier)
-            el = document.querySelector('.payouts-block .bubble-multiplier, .payouts .bubble-multiplier');
-            if (el && el.innerText) return el.innerText.replace('x','').trim();
-
-            return null;
+            // Selectores oficiales de Spribe Aviator
+            const el = document.querySelector('.payouts-block .bubble-multiplier, .payout, .payouts .bubble-multiplier');
+            return el ? el.innerText.replace('x','').trim() : null;
           });
 
           if (cuota && cuota !== ultimaCuota && !isNaN(parseFloat(cuota))) {
@@ -129,7 +125,7 @@ try {
             }
           }
         } catch (err) {
-          // Frame no accesible en este ciclo
+          // Frame en transición
         }
       }
       await new Promise(r => setTimeout(r, 3000));
