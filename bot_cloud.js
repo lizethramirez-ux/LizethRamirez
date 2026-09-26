@@ -1,6 +1,8 @@
 // ═══════════════════════════════════════════════════════════════
-// bot_cloud.js — Bot Aviator (Codere) con AUTO-LOGIN en Actions
-// Login directo (sin Cloudflare) → lanzar Aviator → capturar → Supabase
+// bot_cloud.js — Bot Aviator (Codere) — AUTO-LOGIN en Actions
+// Flujo: Acceder → usuario/contraseña → Acceder → popup OK → Aviator
+// Sitio Ionic/Angular: los botones son <ion-button> (custom),
+// NO <button> nativos — excepto el popup OK (.alert-button).
 // ═══════════════════════════════════════════════════════════════
 
 const { chromium } = require('playwright-extra');
@@ -12,7 +14,9 @@ const USER = process.env.CODERE_USER;
 const PASS = process.env.CODERE_PASSWORD;
 const DURACION_MS = parseInt(process.env.BOT_DURACION_MS || '18000000', 10); // 5 horas
 
-// ── Lectura de multiplicadores (Angular: viven en la PÁGINA) ──
+const OK_SEL = 'button.alert-button:has-text("OK"), .alert-button:has-text("OK")';
+
+// ── Lectura de multiplicadores (historial Angular de Codere) ──
 const leerCuotas = () => [...document.querySelectorAll('[appcoloredmultiplier], .payout')]
   .map(el => (el.textContent || '').trim())
   .filter(t => /^\d+(\.\d+)?x$/i.test(t));
@@ -29,105 +33,111 @@ async function leerCuotasEn(p) {
   return cuotas;
 }
 
-// ── LOGIN ──
-async function hacerLogin(page) {
-  console.log("🔐 Abriendo modal de acceso...");
-
-  const btnAcceder = page.locator(
-    'button:has-text("Acceder"), a:has-text("Acceder"), ' +
-    'button:has-text("Iniciar sesión"), a:has-text("Iniciar sesión"), ' +
-    'a[href*="login"], button:has-text("Log in")'
-  ).first();
-  await btnAcceder.click({ timeout: 15000, force: true });
-
-  await page.waitForSelector('input[type="password"]', { state: 'visible', timeout: 15000 });
-  console.log("   ✅ Modal abierto.");
-
-  // Dump de inputs visibles: si algún selector no coincide, esto nos lo revela
-  const dump = await page.evaluate(() => {
-    const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-    return [...document.querySelectorAll('input')].filter(vis)
-      .map(i => `${i.type || 'text'}|name=${i.name || '-'}|id=${i.id || '-'}|ph=${i.placeholder || '-'}`);
-  });
-  console.log("   🔍 Inputs visibles:", JSON.stringify(dump));
-
-  // Campo de usuario: cascada de selectores comunes
-  const userSels = [
-    'input[name="username"]', '#username',
-    'input[name="email"]', '#email', 'input[type="email"]',
-    'input[formcontrolname="username"]', 'input[formcontrolname="email"]',
-    'input[name="user"]', 'input[name="documento"]',
-    'form input:visible:not([type="password"]):not([type="checkbox"])'
-  ];
-  let campoUser = null, selUsado = '';
-  for (const s of userSels) {
+// ── Clic robusto: ion-button → button → a → texto plano (span) ──
+async function clicarTexto(page, texto, timeout = 5000) {
+  for (const s of [`ion-button:has-text("${texto}")`, `button:has-text("${texto}")`, `a:has-text("${texto}")`]) {
     const loc = page.locator(s).first();
-    if (await loc.isVisible().catch(() => false)) { campoUser = loc; selUsado = s; break; }
+    if (await loc.isVisible().catch(() => false)) {
+      await loc.click({ force: true, timeout }).catch(() => {});
+      return true;
+    }
   }
-  if (!campoUser) {
-    await page.screenshot({ path: 'error.png', fullPage: true });
-    throw new Error("No encontré el campo de usuario — pásame la línea 🔍 Inputs visibles del log.");
+  const span = page.getByText(texto, { exact: true }).first();
+  if (await span.isVisible().catch(() => false)) {
+    await span.click({ force: true, timeout }).catch(() => {});
+    return true;
   }
+  return false;
+}
 
-  console.log(`   ✍️ Escribiendo usuario (${selUsado})...`);
-  await campoUser.click({ force: true });
-  await page.keyboard.press('Control+A');
-  await page.keyboard.press('Backspace');
+// ¿Hay botón/texto "Acceder" visible? (con soporte ion-button)
+async function accederVisible(page) {
+  const a = page.locator('ion-button:has-text("Acceder"), button:has-text("Acceder"), a:has-text("Acceder")');
+  if (await a.first().isVisible().catch(() => false)) return true;
+  const b = page.getByText('Acceder', { exact: true });
+  const n = await b.count().catch(() => 0);
+  for (let i = 0; i < Math.min(n, 5); i++) {
+    if (await b.nth(i).isVisible().catch(() => false)) return true;
+  }
+  return false;
+}
+
+// ═══════════════ LOGIN ═══════════════
+async function hacerLogin(page, abrirModal = true) {
+  // 1. Abrir modal
+  if (abrirModal) {
+    console.log("🔐 [1/5] Clic en 'Acceder' (cabecera)...");
+    if (!(await clicarTexto(page, 'Acceder'))) {
+      await page.screenshot({ path: 'error.png', fullPage: true });
+      throw new Error("No encontré el botón 'Acceder'. Mira error.png.");
+    }
+  } else {
+    console.log("🔐 [1/5] El formulario ya estaba abierto.");
+  }
+  await page.waitForSelector('input[name="username"]', { state: 'visible', timeout: 15000 });
+  console.log("   ✅ Modal de login abierto.");
+
+  // 2. Credenciales (inputs nativos de Ionic: name=username / name=password)
+  console.log("🔐 [2/5] Escribiendo usuario y contraseña...");
+  await page.click('input[name="username"]', { force: true });
+  await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace');
   await page.keyboard.type(USER, { delay: 80 });
 
-  const campoPass = page.locator('input[type="password"]').first();
-  await campoPass.click({ force: true });
-  await page.keyboard.press('Control+A');
-  await page.keyboard.press('Backspace');
+  await page.click('input[name="password"]', { force: true });
+  await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace');
   await page.keyboard.type(PASS, { delay: 80 });
-  console.log("   ✍️ Credenciales escritas. Enviando...");
   await page.screenshot({ path: 'login_formulario.png' });
 
-  // Enviar: Enter primero
-  await campoPass.press('Enter');
-
-  // Verificar: login completado cuando el campo de contraseña desaparece (2 lecturas seguidas)
-  const estaLogueado = async () => {
-    const pw = await page.isVisible('input[type="password"]').catch(() => false);
-    return !pw;
-  };
-
-  let logueado = false, confirmaciones = 0;
-  for (let i = 0; i < 15; i++) {
-    if (await estaLogueado()) { confirmaciones++; if (confirmaciones >= 2) { logueado = true; break; } }
-    else confirmaciones = 0;
-    await page.waitForTimeout(2000);
+  // 3. Enviar: Enter primero; si no basta, el botón "Acceder" del modal (último del DOM)
+  console.log("🔐 [3/5] Enviando...");
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(4000);
+  let pwVisible = await page.isVisible('input[name="password"]').catch(() => false);
+  const okYa = await page.locator(OK_SEL).first().isVisible().catch(() => false);
+  if (pwVisible && !okYa) {
+    const btns = page.locator('ion-button:has-text("Acceder"), button:has-text("Acceder")');
+    const n = await btns.count().catch(() => 0);
+    if (n > 0) {
+      console.log(`   🖱️ Enter no bastó → clic en 'Acceder' #${n} (el del modal)...`);
+      await btns.nth(n - 1).click({ force: true, timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(3000);
+    }
   }
 
-  // Si el Enter no bastó, intentar botón de submit explícito
-  if (!logueado) {
-    console.log("   🖱️ Enter no bastó, probando botón de submit...");
-    const btnSubmit = page.locator(
-      'button[type="submit"], button:has-text("Acceder"), button:has-text("Entrar"), button:has-text("Iniciar")'
-    ).last();
-    if (await btnSubmit.isVisible().catch(() => false)) {
-      await btnSubmit.click({ force: true }).catch(() => {});
-    }
-    confirmaciones = 0;
-    for (let i = 0; i < 15; i++) {
-      if (await estaLogueado()) { confirmaciones++; if (confirmaciones >= 2) { logueado = true; break; } }
-      else confirmaciones = 0;
+  // 4. Popup Ionic con "OK" (aparece tras enviar el login) — hay que cerrarlo
+  console.log("🔐 [4/5] Buscando popup de confirmación con 'OK'...");
+  const btnOK = page.locator(OK_SEL).first();
+  let okCerrado = false;
+  for (let i = 0; i < 10 && !okCerrado; i++) {
+    if (await btnOK.isVisible().catch(() => false)) {
+      await page.waitForTimeout(600);
+      await btnOK.click({ force: true }).catch(() => {});
+      console.log("   ✅ Popup OK cerrado.");
+      okCerrado = true;
+    } else {
       await page.waitForTimeout(2000);
     }
   }
+  if (!okCerrado) console.log("   ℹ️ No apareció popup con OK.");
+  await page.waitForTimeout(2000);
 
+  // 5. Verificación: el campo de contraseña debe haber desaparecido (2 lecturas seguidas)
+  console.log("🔐 [5/5] Verificando sesión...");
+  let confirmaciones = 0, logueado = false;
+  for (let i = 0; i < 15; i++) {
+    const pw = await page.isVisible('input[name="password"]').catch(() => false);
+    if (!pw) { if (++confirmaciones >= 2) { logueado = true; break; } }
+    else confirmaciones = 0;
+    await page.waitForTimeout(2000);
+  }
   if (!logueado) {
     await page.screenshot({ path: 'error.png', fullPage: true });
-    const btns = await page.evaluate(() => {
-      const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-      return [...document.querySelectorAll('button')].filter(vis)
-        .map(b => b.textContent.trim()).filter(Boolean).slice(0, 15);
-    });
-    console.log("   🔍 Botones visibles:", JSON.stringify(btns));
-    throw new Error("Login no completó (¿credenciales? ¿verificación extra?). Mira error.png y los dumps del log.");
+    const texto = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 250)).catch(() => '');
+    console.log(`🔍 Texto en pantalla: "${texto}"`);
+    throw new Error("Login no completó (¿credenciales? ¿popup extra?). Mira error.png y el texto de arriba.");
   }
-
   console.log("   ✅ ¡LOGIN COMPLETADO!");
+  await page.screenshot({ path: 'login_ok.png' });
 }
 
 (async () => {
@@ -166,49 +176,53 @@ async function hacerLogin(page) {
     await page.waitForTimeout(3000);
     await limpiarOverlays(page);
 
-    // ¿Necesita login? (botón de Acceder visible)
-    const necesitaLogin = await page
-      .locator('button:has-text("Acceder"), a:has-text("Acceder"), a:has-text("Iniciar sesión")')
-      .first().isVisible().catch(() => false);
+    // ¿Necesitamos login?
+    const hayAcceder = await accederVisible(page);
+    const formDirecto = await page.isVisible('input[name="username"]').catch(() => false);
 
-    if (necesitaLogin) {
-      await hacerLogin(page);
+    if (hayAcceder || formDirecto) {
+      console.log("🔑 Sin sesión → haciendo login...");
+      await hacerLogin(page, hayAcceder && !formDirecto);
       console.log("📡 Recargando la página del juego con sesión activa...");
       await page.goto(GAME_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(3000);
       await limpiarOverlays(page);
     } else {
-      console.log("✅ Sesión ya activa (no hay botón de Acceder).");
+      console.log("✅ No hay botón 'Acceder' → sesión ya activa.");
     }
 
     let pageJuego = page;
     let cuotas = await leerCuotasEn(pageJuego);
 
-    // ── Lanzar Aviator si estamos en el lobby ──
+    // ── Lanzar AVIATOR si estamos en el lobby ──
     if (!cuotas.length) {
-      console.log("🕹️ Buscando botón AVIATOR...");
-      let botones = [];
-      for (let s = 0; s < 15 && !botones.length && !cuotas.length; s++) {
-        botones = await pageJuego.getByText('AVIATOR', { exact: true }).all().catch(() => []);
-        if (!botones.length) await pageJuego.waitForTimeout(1000);
+      console.log("🕹️ Buscando el botón AVIATOR...");
+      let candidatos = [];
+      for (let s = 0; s < 15 && !candidatos.length && !cuotas.length; s++) {
+        candidatos = await pageJuego.locator('ion-button:has-text("AVIATOR"), button:has-text("AVIATOR")').all().catch(() => []);
+        if (!candidatos.length) {
+          candidatos = await pageJuego.getByText('AVIATOR', { exact: true }).all().catch(() => []);
+        }
+        if (!candidatos.length) await pageJuego.waitForTimeout(1000);
         cuotas = await leerCuotasEn(pageJuego);
       }
 
-      if (!cuotas.length && botones.length) {
-        for (let i = 0; i < Math.min(botones.length, 3) && !cuotas.length; i++) {
+      if (!cuotas.length && candidatos.length) {
+        console.log(`   🖱️ Encontré ${candidatos.length} elemento(s) AVIATOR. Lanzando el juego...`);
+        for (let i = 0; i < Math.min(candidatos.length, 3) && !cuotas.length; i++) {
           try {
             const popupPromise = context.waitForEvent('page', { timeout: 10000 }).catch(() => null);
-            await botones[i].click({ timeout: 5000 });
+            await candidatos[i].click({ timeout: 5000 });
             const popup = await popupPromise;
             if (popup) {
-              console.log("🪟 Juego en pestaña nueva — siguiéndola...");
+              console.log("🪟 El juego se abrió en pestaña NUEVA — siguiéndola...");
               pageJuego = popup;
               await pageJuego.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
             } else {
-              console.log("🖥️ Juego en la misma página.");
+              console.log("🖥️ El juego se abrió en la misma página.");
             }
           } catch (e) {
-            console.log(`   ⚠️ Intento de clic ${i + 1}: ${String(e.message || e).slice(0, 60)}`);
+            console.log(`   ⚠️ Intento ${i + 1}: ${String(e.message || e).slice(0, 60)}`);
           }
           for (let s = 0; s < 20 && !cuotas.length; s++) {
             cuotas = await leerCuotasEn(pageJuego);
@@ -225,8 +239,10 @@ async function hacerLogin(page) {
     }
 
     if (!cuotas.length) {
+      const texto = await pageJuego.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 300)).catch(() => '');
+      console.log(`🔍 Texto visible al fallar: "${texto}"`);
       await pageJuego.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
-      throw new Error("El juego no mostró multiplicadores. Descarga error.png de los artifacts.");
+      throw new Error("El juego no mostró multiplicadores. El texto de arriba y error.png dicen qué pasó.");
     }
 
     console.log(`🎯 ¡JUEGO ACTIVO! ${cuotas.length} multiplicadores en pantalla.\n`);
@@ -286,9 +302,7 @@ async function hacerLogin(page) {
           await enviarSupabase(c);
         }
 
-        if (paraEmitir.length || cuotas[0] !== prevHead || cuotas.length !== prevLen) {
-          lastCambio = Date.now();
-        }
+        if (paraEmitir.length) lastCambio = Date.now();
 
         previas = new Set(cuotas);
         prevHead = cuotas[0];
