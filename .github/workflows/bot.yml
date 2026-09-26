@@ -23,7 +23,8 @@ jobs:
 
       - name: Ejecutar Bot
         env:
-          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+          CODERE_USER: ${{ secrets.CODERE_USER }}
+          CODERE_PASSWORD: ${{ secrets.CODERE_PASSWORD }}
           GAME_URL: ${{ secrets.GAME_URL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -37,3 +38,4 @@ jobs:
           path: |
             error.png
             inicio_ok.png
+            login_formulario.png
