@@ -1,7 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // bot_cloud.js — Bot Aviator (Codere) para GitHub Actions
-// Estrategia: sesión restaurada desde AUTH_JSON_BASE64
-// → nunca hace login → nunca enfrenta a Cloudflare Turnstile.
+// Sesión restaurada (AUTH_JSON_BASE64) + lanzamiento automático del juego
 // ═══════════════════════════════════════════════════════════════
 
 const { chromium } = require('playwright-extra');
@@ -13,12 +12,23 @@ chromium.use(stealth);
 const GAME_URL = process.env.GAME_URL;
 const DURACION_MS = parseInt(process.env.BOT_DURACION_MS || '18000000', 10); // 5 horas
 
-// Se ejecuta DENTRO de la página para leer el historial de multiplicadores.
-// Codere monta el historial con Angular (en la PÁGINA, no dentro del iframe):
-// <div appcoloredmultiplier="" class="payout ..."> 2.28x </div>
+// Se ejecuta DENTRO de la página para leer el historial de multiplicadores
 const leerCuotas = () => [...document.querySelectorAll('[appcoloredmultiplier], .payout')]
   .map(el => (el.textContent || '').trim())
   .filter(t => /^\d+(\.\d+)?x$/i.test(t));
+
+// Lee multiplicadores en la página dada; si no hay, mira dentro de sus iframes
+async function leerCuotasEn(pageJuego) {
+  let cuotas = await pageJuego.evaluate(leerCuotas).catch(() => []);
+  if (!cuotas.length) {
+    for (const f of pageJuego.frames()) {
+      if (f === pageJuego.mainFrame()) continue; // el principal ya se leyó
+      const c = await f.evaluate(leerCuotas).catch(() => []);
+      if (c.length) { cuotas = c; break; }
+    }
+  }
+  return cuotas;
+}
 
 (async () => {
   console.log("🚀 Bot Aviator (Codere) iniciando en GitHub Actions...");
@@ -29,7 +39,6 @@ const leerCuotas = () => [...document.querySelectorAll('[appcoloredmultiplier], 
     process.exit(1);
   }
 
-  // ── 1. Reconstruir la sesión desde el secret ──
   fs.writeFileSync('auth.json', Buffer.from(process.env.AUTH_JSON_BASE64, 'base64').toString('utf-8'));
 
   const browser = await chromium.launch({
@@ -48,33 +57,73 @@ const leerCuotas = () => [...document.querySelectorAll('[appcoloredmultiplier], 
   const page = await context.newPage();
 
   try {
-    // ── 2. Cargar el juego con la sesión restaurada ──
-    console.log("📡 Cargando Aviator con sesión restaurada...");
+    // ── 1. Cargar la URL ──
+    console.log("📡 Cargando página del juego...");
     await page.goto(GAME_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(3000);
 
-    // ── 3. Verificar que el juego cargó (iframe de Spribe = sesión viva) ──
-    let frame = null;
-    for (let i = 0; i < 30; i++) {
-      frame = page.frames().find(f => /spribe|aviator/i.test(f.url()));
-      if (frame) break;
-      await page.waitForTimeout(1000);
+    let pageJuego = page; // puede cambiar si el juego abre en pestaña nueva
+    let cuotas = [];
+
+    // ── 2. Esperar 15s: ¿multiplicadores directos o botón AVIATOR? ──
+    let botonesAviator = [];
+    for (let s = 0; s < 15 && !cuotas.length && !botonesAviator.length; s++) {
+      cuotas = await leerCuotasEn(pageJuego);
+      if (!cuotas.length) {
+        botonesAviator = await pageJuego.getByText('AVIATOR', { exact: true }).all().catch(() => []);
+      }
+      if (!cuotas.length && !botonesAviator.length) await pageJuego.waitForTimeout(1000);
     }
 
-    if (!frame) {
-      await page.screenshot({ path: 'error.png', fullPage: true });
-      const pideLogin = await page
-        .isVisible('button:has-text("Ingresar"), button:has-text("Entrar"), a:has-text("Ingresar"), a:has-text("Login")')
-        .catch(() => false);
-      throw new Error(pideLogin
-        ? "🔴 SESIÓN MUERTA: el sitio pide login → regenera auth.json en tu PC y actualiza el secret AUTH_JSON_BASE64"
-        : "🔴 El iframe del juego no apareció y no hay botón de login → revisa error.png");
+    // ¿Sesión muerta?
+    const pideLogin = await pageJuego
+      .locator('button:has-text("Ingresar"), a:has-text("Ingresar"), button:has-text("Entrar"), button:has-text("Log in"), a:has-text("Login")')
+      .first().isVisible().catch(() => false);
+    if (pideLogin) {
+      await pageJuego.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
+      throw new Error("🔴 SESIÓN MUERTA: la página pide login → regenera auth.json y actualiza el secret AUTH_JSON_BASE64");
     }
 
-    console.log(`🎯 Sesión VÁLIDA. Conectado a: ${frame.url().slice(0, 90)}`);
-    await page.screenshot({ path: 'inicio_ok.png' });
-    console.log("👂 Iniciando escucha de multiplicadores...\n");
+    // ── 3. Si estamos en el lobby, clicar AVIATOR para lanzar el juego ──
+    if (!cuotas.length && botonesAviator.length) {
+      console.log(`🕹️ Lobby detectado con botón AVIATOR (${botonesAviator.length} coincidencias). Lanzando el juego...`);
+      for (let i = 0; i < Math.min(botonesAviator.length, 3) && !cuotas.length; i++) {
+        try {
+          const popupPromise = context.waitForEvent('page', { timeout: 10000 }).catch(() => null);
+          await botonesAviator[i].click({ timeout: 5000 });
+          const popup = await popupPromise;
+          if (popup) {
+            console.log("🪟 El juego se abrió en una pestaña NUEVA — siguiéndola...");
+            pageJuego = popup;
+            await pageJuego.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+          } else {
+            console.log("🖥️ El juego se abrió en la misma página.");
+          }
+        } catch (e) {
+          console.log(`   ⚠️ Intento de clic ${i + 1}: ${String(e.message || e).slice(0, 60)}`);
+        }
+        for (let s = 0; s < 15 && !cuotas.length; s++) {
+          cuotas = await leerCuotasEn(pageJuego);
+          if (!cuotas.length) await pageJuego.waitForTimeout(1000);
+        }
+      }
+    }
 
-    // ── 4. Envío a Supabase ──
+    // ── 4. Espera final: el juego puede tardar en arrancar ──
+    for (let s = 0; s < 30 && !cuotas.length; s++) {
+      cuotas = await leerCuotasEn(pageJuego);
+      if (!cuotas.length) await pageJuego.waitForTimeout(1000);
+    }
+
+    if (!cuotas.length) {
+      await pageJuego.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
+      throw new Error("🔴 El juego no mostró multiplicadores en ~45s tras el clic. Descarga error.png de los artifacts y me dices qué se ve.");
+    }
+
+    console.log(`🎯 ¡JUEGO ACTIVO! ${cuotas.length} multiplicadores en pantalla.\n`);
+    await pageJuego.screenshot({ path: 'inicio_ok.png' });
+
+    // ── 5. Envío a Supabase ──
     const enviarSupabase = async (texto) => {
       if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) return;
       try {
@@ -93,52 +142,33 @@ const leerCuotas = () => [...document.querySelectorAll('[appcoloredmultiplier], 
       }
     };
 
-    // ── 5. Bucle de extracción ──
-    let previas = new Set();   // valores vistos en la lectura anterior
-    let prevHead = "";         // primer valor de la lista anterior
-    let prevTail = "";         // último valor de la lista anterior
-    let prevLen = 0;           // largo de la lista anterior
-    let calibrando = true;     // primera lectura válida: memorizar SIN registrar
-    let ciclos = 0, contador = 0, fallosVida = 0;
+    // ── 6. Bucle de captura ──
+    let previas = new Set(cuotas);
+    let prevHead = cuotas[0];
+    let prevTail = cuotas[cuotas.length - 1];
+    let prevLen = cuotas.length;
+    let ciclos = 0, contador = 0, latidosVacios = 0;
+    let lastCambio = Date.now();
     const t0 = Date.now();
+
+    console.log(`🎚️ Calibrado con ${cuotas.length} multiplicadores. Esperando rondas nuevas...\n`);
 
     while (Date.now() - t0 < DURACION_MS) {
       ciclos++;
+      cuotas = await leerCuotasEn(pageJuego);
 
-      // 5a. Leer: primero la PÁGINA (donde Codere monta el historial Angular),
-      //     y si no hay nada ahí, barrer todos los iframes por si acaso.
-      let cuotas = await page.evaluate(leerCuotas).catch(() => []);
-      if (!cuotas.length) {
-        for (const f of page.frames()) {
-          const c = await f.evaluate(leerCuotas).catch(() => []);
-          if (c.length) { cuotas = c; break; }
-        }
-      }
-
-      // 5b. Calibración: memorizar el historial inicial sin insertarlo
-      //     (evita volcar 30 multiplicadores viejos con timestamps falsos)
-      if (calibrando && cuotas.length) {
-        calibrando = false;
-        previas = new Set(cuotas);
-        prevHead = cuotas[0];
-        prevTail = cuotas[cuotas.length - 1];
-        prevLen = cuotas.length;
-        console.log(`🎚️ Calibrado con ${cuotas.length} multiplicadores en pantalla. Esperando rondas nuevas...`);
-      }
-
-      // 5c. Detección de rondas nuevas
-      if (!calibrando) {
+      if (cuotas.length) {
         const nuevasPorContenido = cuotas.filter(c => !previas.has(c));
         let paraEmitir = [];
 
         if (nuevasPorContenido.length) {
           paraEmitir = nuevasPorContenido;
-        } else if (cuotas.length) {
+        } else {
           const head = cuotas[0];
           const tail = cuotas[cuotas.length - 1];
-          if (head !== prevHead) paraEmitir = [head];              // entró al frente
-          else if (tail !== prevTail) paraEmitir = [tail];         // entró al final
-          else if (cuotas.length !== prevLen) paraEmitir = [head]; // creció con duplicado
+          if (head !== prevHead) paraEmitir = [head];
+          else if (tail !== prevTail) paraEmitir = [tail];
+          else if (cuotas.length !== prevLen) paraEmitir = [head];
         }
 
         for (const c of paraEmitir) {
@@ -147,49 +177,40 @@ const leerCuotas = () => [...document.querySelectorAll('[appcoloredmultiplier], 
           await enviarSupabase(c);
         }
 
-        if (cuotas.length) {
-          previas = new Set(cuotas);
-          prevHead = cuotas[0];
-          prevTail = cuotas[cuotas.length - 1];
-          prevLen = cuotas.length;
+        if (paraEmitir.length || cuotas[0] !== prevHead || cuotas.length !== prevLen) {
+          lastCambio = Date.now();
         }
+
+        previas = new Set(cuotas);
+        prevHead = cuotas[0];
+        prevTail = cuotas[cuotas.length - 1];
+        prevLen = cuotas.length;
+        latidosVacios = 0;
       }
 
-      // 5d. Latido cada 10 ciclos (~30s): prueba de vida del bot
+      // Latido cada 10 ciclos (~30s)
       if (ciclos % 10 === 0) {
         const secs = Math.round((Date.now() - t0) / 1000);
         console.log(`💚 Latido ${secs}s — capturadas: ${contador} — en pantalla: ${cuotas.slice(0, 5).join(' | ') || '(nada)'}`);
 
-        // Diagnóstico único a los ~60s si nunca se leyó nada
-        if (!cuotas.length && ciclos === 20) {
-          try {
-            const diag = await page.evaluate(() => ({
-              attr: document.querySelectorAll('[appcoloredmultiplier]').length,
-              payout: document.querySelectorAll('.payout').length,
-              texto: document.body.innerText.replace(/\s+/g, ' ').slice(0, 200)
-            }));
-            console.log(`🔍 DIAG página → [appcoloredmultiplier]=${diag.attr}, .payout=${diag.payout}`);
-            console.log(`🔍 Texto visible: ${diag.texto || '(vacío)'}`);
-          } catch (e) {}
+        if (pageJuego.isClosed()) {
+          await page.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
+          throw new Error("🔴 La pestaña del juego se cerró (posible sesión muerta). Regenera auth.json.");
         }
-
-        // Vigilancia de sesión: sin datos Y sin frame de juego = posible expiración
         if (!cuotas.length) {
-          const frameVivo = page.frames().some(f => /spribe|aviator/i.test(f.url()));
-          if (!frameVivo) {
-            fallosVida++;
-            console.log(`⚠️ Sin datos y sin frame de juego (${fallosVida}/3)...`);
-            if (fallosVida >= 3) {
-              await page.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
-              throw new Error("🔴 El juego dejó de responder (sesión muerta o redirección). Regenera auth.json y actualiza el secret.");
-            }
+          latidosVacios++;
+          if (latidosVacios >= 3) {
+            await pageJuego.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
+            throw new Error("🔴 Sin multiplicadores por ~90s. Mira error.png.");
           }
-        } else {
-          fallosVida = 0;
+        }
+        if (Date.now() - lastCambio > 10 * 60 * 1000) {
+          await pageJuego.screenshot({ path: 'error.png', fullPage: true }).catch(() => {});
+          throw new Error("🔴 El historial lleva 10 min sin cambiar (juego congelado). Mira error.png.");
         }
       }
 
-      await page.waitForTimeout(2500 + Math.random() * 1000);
+      await pageJuego.waitForTimeout(2500 + Math.random() * 1000);
     }
 
     console.log(`\n🏁 Corrida completada: ${contador} cuotas capturadas y enviadas a Supabase.`);
