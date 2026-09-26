@@ -27,7 +27,7 @@ jobs:
           GAME_URL: ${{ secrets.GAME_URL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node bot_codere.js
+        run: node bot_cloude.js
 
       - name: Guardar capturas
         if: always()
