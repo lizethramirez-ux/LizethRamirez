@@ -1,4 +1,4 @@
-name: Rushbet Bot 24/7
+name: Bot Codere Aviator
 
 on:
   schedule:
@@ -8,32 +8,32 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 330
     steps:
-      - name: Descargar repositorio
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Instalar Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Instalar Playwright, Stealth y dependencias
+      - name: Instalar dependencias
         run: |
           npm install playwright playwright-extra puppeteer-extra-plugin-stealth @supabase/supabase-js
           npx playwright install --with-deps chromium
 
-      - name: Ejecutar Bot con Auto-Login
+      - name: Ejecutar Bot
         env:
-          RUSHBET_USER: ${{ secrets.RUSHBET_USER }}
-          RUSHBET_PASSWORD: ${{ secrets.RUSHBET_PASSWORD }}
+          AUTH_JSON_BASE64: ${{ secrets.AUTH_JSON_BASE64 }}
+          GAME_URL: ${{ secrets.GAME_URL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node bot_cloud.js
+        run: node bot_codere.js
 
-      - name: Guardar Captura en caso de error
-        if: failure()
+      - name: Guardar capturas
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: captura-error
-          path: error.png
+          name: capturas
+          path: |
+            error.png
+            inicio_ok.png
