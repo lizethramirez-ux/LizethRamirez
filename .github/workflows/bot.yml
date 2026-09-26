@@ -1,4 +1,4 @@
-name: Bot Codere Aviator
+name: Bot Aviator Codere
 
 on:
   schedule:
@@ -18,7 +18,7 @@ jobs:
 
       - name: Instalar dependencias
         run: |
-          npm install playwright playwright-extra puppeteer-extra-plugin-stealth @supabase/supabase-js
+          npm install playwright playwright-extra puppeteer-extra-plugin-stealth
           npx playwright install --with-deps chromium
 
       - name: Ejecutar Bot
